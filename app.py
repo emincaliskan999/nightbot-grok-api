@@ -1,7 +1,7 @@
 import os
 import time
 import re
-from collections import defaultdict, deque
+from collections import defaultdict
 
 import requests
 from flask import Flask, request, Response, jsonify
@@ -11,20 +11,15 @@ app = Flask(__name__)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
 
-# Basit korumalar
 MAX_INPUT_LENGTH = int(os.getenv("MAX_INPUT_LENGTH", "220"))
 MAX_OUTPUT_LENGTH = int(os.getenv("MAX_OUTPUT_LENGTH", "280"))
 REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "25"))
 
-# Cooldown
 USER_COOLDOWN_SECONDS = int(os.getenv("USER_COOLDOWN_SECONDS", "20"))
 GLOBAL_COOLDOWN_SECONDS = int(os.getenv("GLOBAL_COOLDOWN_SECONDS", "5"))
 
 last_user_call = defaultdict(float)
 last_global_call = 0.0
-
-# Basit hafıza / rate-limit koruması
-recent_questions = deque(maxlen=30)
 
 SYSTEM_PROMPT = """
 You are an esports-specialized reply engine for a professional esports team's Twitch chat command called !grok.
@@ -55,7 +50,6 @@ BANNED_PATTERNS = [
     r"\bkill yourself\b",
     r"\bkys\b",
     r"\bnazi\b",
-    r"\bterrorist\b",
 ]
 
 def now_ts() -> float:
@@ -63,11 +57,8 @@ def now_ts() -> float:
 
 def sanitize_text(text: str) -> str:
     text = (text or "").strip()
-
-    # boşluk sadeleştir
     text = re.sub(r"\s+", " ", text)
 
-    # çok uzunsa kes
     if len(text) > MAX_INPUT_LENGTH:
         text = text[:MAX_INPUT_LENGTH].strip()
 
@@ -79,11 +70,7 @@ def violates_simple_filter(text: str) -> bool:
 
 def cleanup_output(text: str) -> str:
     text = (text or "").strip()
-
-    # satırları tek satıra indir
     text = re.sub(r"\s+", " ", text)
-
-    # quote / gereksiz dış karakter temizliği
     text = text.strip(' "\'')
 
     if len(text) > MAX_OUTPUT_LENGTH:
@@ -145,17 +132,17 @@ Keep it concise and punchy.
         response.raise_for_status()
         data = response.json()
 
-        # Responses API output_text alma
         text = data.get("output_text", "").strip()
 
-        # output_text gelmezse alternatif parse
         if not text:
             output = data.get("output", [])
             parts = []
+
             for item in output:
                 for content in item.get("content", []):
                     if content.get("type") == "output_text":
                         parts.append(content.get("text", ""))
+
             text = " ".join(parts).strip()
 
         if not text:
@@ -187,21 +174,14 @@ def grok():
     question = sanitize_text(question)
     user_name = sanitize_text(user_name)
 
-    # boş giriş
     if not question:
         return Response("Soruyu yaz da masayı açalım.", mimetype="text/plain; charset=utf-8")
 
-    # filtre
     if violates_simple_filter(question):
         return Response("Bu soruya analyst masası girmiyor.", mimetype="text/plain; charset=utf-8")
 
-    # tekrar eden spam
-    if question.lower() in recent_questions:
-        return Response("Aynı roundu tekrar oynamayalım, yeni soru at.", mimetype="text/plain; charset=utf-8")
-    recent_questions.append(question.lower())
-
-    # kullanıcı cooldown
     current = now_ts()
+
     if user_name:
         elapsed_user = current - last_user_call[user_name.lower()]
         if elapsed_user < USER_COOLDOWN_SECONDS:
@@ -211,7 +191,6 @@ def grok():
                 mimetype="text/plain; charset=utf-8"
             )
 
-    # global cooldown
     elapsed_global = current - last_global_call
     if elapsed_global < GLOBAL_COOLDOWN_SECONDS:
         wait_left = int(GLOBAL_COOLDOWN_SECONDS - elapsed_global) + 1
@@ -226,7 +205,6 @@ def grok():
     if user_name:
         answer = f"@{user_name} {answer}"
 
-    # nightbot için güvenli kısaltma
     if len(answer) > MAX_OUTPUT_LENGTH:
         answer = answer[:MAX_OUTPUT_LENGTH].rstrip(" ,.-") + "..."
 
