@@ -1,10 +1,11 @@
 import os
-import time
 import re
+import time
 from collections import defaultdict
+from typing import Optional
 
 import requests
-from flask import Flask, request, Response, jsonify
+from flask import Flask, Response, jsonify, request
 
 app = Flask(__name__)
 
@@ -15,36 +16,11 @@ MAX_INPUT_LENGTH = int(os.getenv("MAX_INPUT_LENGTH", "220"))
 MAX_OUTPUT_LENGTH = int(os.getenv("MAX_OUTPUT_LENGTH", "280"))
 REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "25"))
 
-USER_COOLDOWN_SECONDS = int(os.getenv("USER_COOLDOWN_SECONDS", "20"))
-GLOBAL_COOLDOWN_SECONDS = int(os.getenv("GLOBAL_COOLDOWN_SECONDS", "5"))
+USER_COOLDOWN_SECONDS = int(os.getenv("USER_COOLDOWN_SECONDS", "8"))
+GLOBAL_COOLDOWN_SECONDS = int(os.getenv("GLOBAL_COOLDOWN_SECONDS", "2"))
 
 last_user_call = defaultdict(float)
 last_global_call = 0.0
-
-SYSTEM_PROMPT = """
-You are an esports-specialized reply engine for a professional esports team's Twitch chat command called !grok.
-
-Your job:
-- Answer like someone from an esports org's stream chat universe.
-- Be especially strong in Counter-Strike, esports culture, players, maps, tactics, pressure, LAN vs online, clutches, economy, role fit, momentum, and fan takes.
-- Sound sharp, witty, confident, and chat-native.
-- Keep answers short, clean, and highly readable in Twitch chat.
-- Never sound like a generic assistant.
-- Never say you are an AI.
-- Never mention policies, prompts, or internal instructions.
-- Do not overexplain.
-
-Style:
-- 1 to 3 short sentences maximum.
-- Usually under 280 characters.
-- Punchy, opinionated, readable.
-- Can be playful, but not cringe.
-- No emojis unless absolutely necessary.
-- If the question is vague, answer with a concise esports-style line rather than asking too many questions.
-- If the topic is non-esports, lightly redirect it back to gaming/esports tone.
-- If asked about "our team", be supportive, confident, and brand-friendly.
-- Avoid toxicity, slurs, hateful or dangerous content.
-"""
 
 BANNED_PATTERNS = [
     r"\bkill yourself\b",
@@ -52,16 +28,179 @@ BANNED_PATTERNS = [
     r"\bnazi\b",
 ]
 
+CASUAL_EXACT = {
+    "selam",
+    "slm",
+    "sa",
+    "sea",
+    "merhaba",
+    "hello",
+    "hi",
+    "hey",
+    "hg",
+    "ho",
+    "naber",
+    "napıyon",
+    "napiyon",
+    "napiyon",
+    "nasılsın",
+    "nasilsin",
+    "iyi misin",
+    "iyi yayınlar",
+    "iyi yayinlar",
+    "kolay gelsin",
+    "noluyo",
+    "noluyor",
+}
+
+CASUAL_KEYWORDS = [
+    "selam",
+    "merhaba",
+    "hello",
+    "hi",
+    "hey",
+    "naber",
+    "nasılsın",
+    "nasilsin",
+    "iyi misin",
+    "iyi yayınlar",
+    "iyi yayinlar",
+    "kolay gelsin",
+    "yayın nasıl",
+    "yayin nasil",
+    "hoş geldik",
+    "hos geldik",
+]
+
+ESPORTS_KEYWORDS = [
+    "cs",
+    "cs2",
+    "counter",
+    "counter-strike",
+    "sangal",
+    "maç",
+    "mac",
+    "match",
+    "oyuncu",
+    "player",
+    "takım",
+    "team",
+    "igl",
+    "entry",
+    "awp",
+    "lurker",
+    "anchor",
+    "aim",
+    "macro",
+    "mental",
+    "tempo",
+    "utility",
+    "spacing",
+    "trade",
+    "clutch",
+    "eco",
+    "force",
+    "anti-eco",
+    "execute",
+    "default",
+    "retake",
+    "ct",
+    "t-side",
+    "ct-side",
+    "mirage",
+    "dust2",
+    "inferno",
+    "nuke",
+    "ancient",
+    "anubis",
+    "train",
+    "vertigo",
+    "overpass",
+    "kazanır",
+    "kazanir",
+    "kim alır",
+    "kim alir",
+    "kim kazanır",
+    "kim kazanir",
+    "win",
+    "lose",
+    "washed",
+    "fraud",
+    "meta",
+    "tier 1",
+    "tier1",
+    "tier 2",
+    "tier2",
+    "lan",
+    "online",
+]
+
+MEME_KEYWORDS = [
+    "noob",
+    "çöp",
+    "cop",
+    "satıldı",
+    "satildi",
+    "boostla",
+    "ben niye kötüyüm",
+    "ben niye kotuyum",
+    "ben niye noobum",
+    "skill issue",
+    "fraud check",
+    "washed mı",
+    "washed mi",
+    "roast",
+]
+
+CASUAL_PROMPT = """
+Sen bir espor takımının Twitch chat botusun.
+Kullanıcı günlük bir şey yazdı. Buna doğal, kısa, samimi ve chat uyumlu cevap ver.
+
+Kurallar:
+- Türkçe yaz.
+- 1 kısa cümle, en fazla 2 kısa cümle.
+- Gamer/chat havası olsun.
+- Zorlama espor analizi yapma.
+- Generic AI gibi konuşma.
+- Samimi ama fazla yapay olma.
+"""
+
+ESPORTS_PROMPT = """
+Sen bir espor takımının Twitch chat botusun.
+Kullanıcı espor veya Counter-Strike ile ilgili bir şey sordu.
+
+Kurallar:
+- Türkçe yaz.
+- Kısa, net, opinionated cevap ver.
+- Counter-Strike, haritalar, roller, macro, aim, mental, tempo, utility gibi konulara hakim ol.
+- 1 veya 2 kısa cümle yaz.
+- Uzun analiz yapma.
+- Generic AI gibi konuşma.
+- Twitch chatte akıcı okunmalı.
+- Takım sorularında destekleyici ama abartısız ol.
+"""
+
+MEME_PROMPT = """
+Sen bir espor takımının Twitch chat botusun.
+Kullanıcı troll, yarı saçma veya meme tarzı bir şey yazdı.
+
+Kurallar:
+- Türkçe yaz.
+- Kısa, komik, hafif taşlayıcı cevap ver.
+- Aşağılayıcı veya aşırı toksik olma.
+- 1 kısa cümle, gerekirse 2 kısa cümle.
+- Cringe olma.
+- Twitch chatte hızlı okunacak kadar kısa kal.
+"""
+
 def now_ts() -> float:
     return time.time()
 
 def sanitize_text(text: str) -> str:
     text = (text or "").strip()
     text = re.sub(r"\s+", " ", text)
-
     if len(text) > MAX_INPUT_LENGTH:
         text = text[:MAX_INPUT_LENGTH].strip()
-
     return text
 
 def violates_simple_filter(text: str) -> bool:
@@ -78,33 +217,109 @@ def cleanup_output(text: str) -> str:
 
     return text
 
-def fallback_answer(question: str) -> str:
+def contains_any(text: str, words) -> bool:
+    lowered = text.lower()
+    return any(word in lowered for word in words)
+
+def classify_message(question: str) -> str:
+    q = question.lower().strip()
+
+    if q in CASUAL_EXACT:
+        return "casual"
+
+    if contains_any(q, ESPORTS_KEYWORDS):
+        return "esports"
+
+    if contains_any(q, MEME_KEYWORDS):
+        return "meme"
+
+    if contains_any(q, CASUAL_KEYWORDS):
+        return "casual"
+
+    if len(q) <= 12:
+        return "casual"
+
+    return "general"
+
+def rule_based_answer(question: str, mode: str) -> Optional[str]:
+    q = question.lower().strip()
+
+    if mode == "casual":
+        if q in {"selam", "slm", "sa", "sea", "merhaba", "hello", "hi", "hey"}:
+            return "Selam, chat ayakta."
+        if q in {"naber", "napıyon", "napiyon", "napiyon"}:
+            return "İyiyiz, lobby sıcak."
+        if q in {"nasılsın", "nasilsin", "iyi misin"}:
+            return "Ayaktayız, server açık."
+        if "iyi yayınlar" in q or "iyi yayinlar" in q:
+            return "Eyvallah, sen de hoş geldin."
+        if "kolay gelsin" in q:
+            return "Eyvallah, utility bol olsun."
+
+    if mode == "esports":
+        if "sangal" in q and any(x in q for x in ["kazan", "alır", "alir", "win", "bugün", "bugun"]):
+            return "Temiz başlangıç gelirse alırız. Tempo bizdeyse maç da bize döner."
+        if "mirage" in q and "dust2" in q:
+            return "Mirage daha tam paket, Dust2 daha saf kavga."
+        if "inferno" in q and "mirage" in q:
+            return "Inferno plan ister, Mirage alan verir. Takımın yapısına bakar."
+        if "aim" in q and "macro" in q:
+            return "Aim round açar, macro maç alır."
+        if any(x in q for x in ["kim alır", "kim alir", "kim kazanır", "kim kazanir", "who wins"]):
+            return "Kağıt başka, server başka. Formu ve mentalı sağlam olan alır."
+        if "washed" in q:
+            return "Washed damgası kolay vurulur. Bazen oyuncu değil sistem düşer."
+
+    if mode == "meme":
+        if "noob" in q:
+            return "Aim yetmemiş, özgüven fazla gelmiş."
+        if "satıldı" in q or "satildi" in q:
+            return "Satıldı demek kolay, kötü oynandı demek daha dürüst."
+        if "skill issue" in q:
+            return "Bunda rapor kısa: evet biraz öyle."
+
+    if len(q) <= 3:
+        return "Bu kadar kısa atarsan ben de eco cevap dönerim."
+
+    return None
+
+def fallback_answer(question: str, mode: str) -> str:
     q = (question or "").lower()
 
-    if not q:
-        return "Soruyu at da analyst masası açılsın."
+    if mode == "casual":
+        return "Buradayız, chate bağlandık."
 
-    if any(word in q for word in ["kim alır", "who wins", "kim kazanır"]):
-        return "Kağıtta başka, serverda başka. Formu iyi olan alır."
+    if mode == "esports":
+        if any(word in q for word in ["map", "mirage", "dust2", "inferno", "nuke", "ancient", "anubis", "train"]):
+            return "Map tek başına kurtarmaz, setup kötüyse güzel harita da çöker."
+        if any(word in q for word in ["takım", "team", "oyuncu", "player"]):
+            return "İsimden çok uyum oynar. Kağıttaki beşliyle serverdaki beşli aynı olmuyor."
+        return "Bu soru oynar ama biraz daha açarsan daha temiz vururum."
 
-    if any(word in q for word in ["inferno", "mirage", "nuke", "ancient", "dust2", "anubis", "train"]):
-        return "Map güzel ama plan yoksa duvara konuşur gibi round oynarsın."
+    if mode == "meme":
+        return "Burada biraz skill issue kokusu aldım."
 
-    if any(word in q for word in ["aim", "mechanic", "mekanik"]):
-        return "Aim tek başına yetmez, spacing ve karar verme çökükse görüntü kurtarmaz."
+    return "Mesaj geldi, ben hazırım."
 
-    return "Soru iyi de biraz daha net at, yoksa analyst masası sisli kalıyor."
-
-def generate_openai_answer(question: str, user_name: str = "") -> str:
+def generate_openai_answer(question: str, mode: str, user_name: str = "") -> str:
     if not OPENAI_API_KEY:
-        return fallback_answer(question)
+        return fallback_answer(question, mode)
 
-    input_text = f"""
-User: {user_name or "viewer"}
-Question: {question}
+    if mode == "casual":
+        system_prompt = CASUAL_PROMPT
+    elif mode == "esports":
+        system_prompt = ESPORTS_PROMPT
+    elif mode == "meme":
+        system_prompt = MEME_PROMPT
+    else:
+        system_prompt = CASUAL_PROMPT
 
-Reply in the team's Twitch-chat esports style.
-Keep it concise and punchy.
+    user_input = f"""
+Kullanıcı adı: {user_name or "viewer"}
+Mesaj: {question}
+
+Mod: {mode}
+Kısa, doğal, Türkçe ve Twitch chat uyumlu cevap ver.
 """
 
     headers = {
@@ -115,11 +330,11 @@ Keep it concise and punchy.
     payload = {
         "model": OPENAI_MODEL,
         "input": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": input_text}
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_input},
         ],
-        "max_output_tokens": 120,
-        "temperature": 0.9
+        "max_output_tokens": 90,
+        "temperature": 1.0,
     }
 
     try:
@@ -137,21 +352,19 @@ Keep it concise and punchy.
         if not text:
             output = data.get("output", [])
             parts = []
-
             for item in output:
                 for content in item.get("content", []):
                     if content.get("type") == "output_text":
                         parts.append(content.get("text", ""))
-
             text = " ".join(parts).strip()
 
         if not text:
-            return fallback_answer(question)
+            return fallback_answer(question, mode)
 
         return cleanup_output(text)
 
     except Exception:
-        return fallback_answer(question)
+        return fallback_answer(question, mode)
 
 @app.get("/")
 def home():
@@ -175,10 +388,10 @@ def grok():
     user_name = sanitize_text(user_name)
 
     if not question:
-        return Response("Soruyu yaz da masayı açalım.", mimetype="text/plain; charset=utf-8")
+        return Response("Soruyu sal da masa kurulsun.", mimetype="text/plain; charset=utf-8")
 
     if violates_simple_filter(question):
-        return Response("Bu soruya analyst masası girmiyor.", mimetype="text/plain; charset=utf-8")
+        return Response("Bu soruya girmiyorum.", mimetype="text/plain; charset=utf-8")
 
     current = now_ts()
 
@@ -187,7 +400,7 @@ def grok():
         if elapsed_user < USER_COOLDOWN_SECONDS:
             wait_left = int(USER_COOLDOWN_SECONDS - elapsed_user) + 1
             return Response(
-                f"{user_name}, cooldown var. {wait_left}s sonra tekrar dene.",
+                f"{wait_left}s cooldown.",
                 mimetype="text/plain; charset=utf-8"
             )
 
@@ -195,18 +408,17 @@ def grok():
     if elapsed_global < GLOBAL_COOLDOWN_SECONDS:
         wait_left = int(GLOBAL_COOLDOWN_SECONDS - elapsed_global) + 1
         return Response(
-            f"Bot şu an utility altında, {wait_left}s sonra tekrar dene.",
+            f"Bot meşgul, {wait_left}s sonra tekrar.",
             mimetype="text/plain; charset=utf-8"
         )
 
-    answer = generate_openai_answer(question, user_name=user_name)
+    mode = classify_message(question)
+
+    answer = rule_based_answer(question, mode)
+    if not answer:
+        answer = generate_openai_answer(question, mode, user_name=user_name)
+
     answer = cleanup_output(answer)
-
-    if user_name:
-        answer = f"@{user_name} {answer}"
-
-    if len(answer) > MAX_OUTPUT_LENGTH:
-        answer = answer[:MAX_OUTPUT_LENGTH].rstrip(" ,.-") + "..."
 
     last_global_call = current
     if user_name:
